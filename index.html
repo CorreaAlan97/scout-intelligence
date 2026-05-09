@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Scout Intelligence — Alan Correa</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@400;500;600;700;800&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <div class="grain"></div>
+
+  <header class="header">
+    <div class="header-inner">
+      <div class="logo">
+        <span class="logo-mark">SI</span>
+        <div class="logo-text">
+          <span class="logo-title">Scout Intelligence</span>
+          <span class="logo-sub">Alan Correa · Analista & Scout</span>
+        </div>
+      </div>
+      <nav class="nav" id="mainNav">
+        <button class="nav-btn active" data-page="overview">Overview</button>
+        <button class="nav-btn" data-page="players">Jugadores</button>
+        <button class="nav-btn" data-page="detail">Perfil</button>
+        <button class="nav-btn" data-page="similarity">Similitud</button>
+        <button class="nav-btn" data-page="stats">Estadísticas</button>
+      </nav>
+      <div class="header-status">
+        <span class="status-dot" id="statusDot"></span>
+        <span class="status-text" id="statusText">Conectando...</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="main">
+
+    <!-- OVERVIEW -->
+    <section class="page active" id="page-overview">
+      <div class="page-header">
+        <h1 class="page-title">Base de datos</h1>
+        <p class="page-desc">Visorias registradas y métricas generales del sistema.</p>
+      </div>
+      <div class="metrics-grid" id="metricsGrid">
+        <div class="metric-card skeleton"></div>
+        <div class="metric-card skeleton"></div>
+        <div class="metric-card skeleton"></div>
+        <div class="metric-card skeleton"></div>
+      </div>
+      <div class="charts-grid">
+        <div class="chart-card" id="posChartCard">
+          <div class="chart-label">Distribución por posición</div>
+          <canvas id="posChart"></canvas>
+        </div>
+        <div class="chart-card" id="nivChartCard">
+          <div class="chart-label">Nivel de habilidad general</div>
+          <canvas id="nivChart"></canvas>
+        </div>
+      </div>
+      <div class="table-card">
+        <div class="table-label">Últimas visorias</div>
+        <div id="recentList"></div>
+      </div>
+    </section>
+
+    <!-- PLAYERS -->
+    <section class="page" id="page-players">
+      <div class="page-header">
+        <h1 class="page-title">Jugadores</h1>
+        <p class="page-desc">Filtrá y explorá todos los perfiles visoriados.</p>
+      </div>
+      <div class="filters">
+        <select id="fPos" class="filter-select">
+          <option value="">Todas las posiciones</option>
+        </select>
+        <select id="fRol" class="filter-select">
+          <option value="">Todos los roles</option>
+        </select>
+        <select id="fNivel" class="filter-select">
+          <option value="">Cualquier nivel</option>
+          <option value="si">Con nivel para el club</option>
+          <option value="no">Sin nivel</option>
+        </select>
+        <span class="results-count" id="resultsCount"></span>
+      </div>
+      <div class="players-grid" id="playersGrid"></div>
+    </section>
+
+    <!-- DETAIL -->
+    <section class="page" id="page-detail">
+      <div id="detailContent">
+        <div class="empty-state">
+          <div class="empty-icon">→</div>
+          <p>Seleccioná un jugador desde la pestaña <strong>Jugadores</strong> para ver su perfil completo.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- SIMILARITY -->
+    <section class="page" id="page-similarity">
+      <div class="page-header">
+        <h1 class="page-title">Motor de similitud</h1>
+        <p class="page-desc">Encontrá perfiles similares combinando métricas numéricas y descripción del jugador.</p>
+      </div>
+      <div class="sim-controls">
+        <select id="simSelect" class="filter-select sim-select">
+          <option value="">— Elegí un jugador de referencia —</option>
+        </select>
+        <div class="sim-weights">
+          <label class="weight-label">
+            <span>Peso estadístico</span>
+            <input type="range" id="wStats" min="0" max="100" value="50" oninput="updateWeights()">
+            <span id="wStatsVal" class="weight-val">50%</span>
+          </label>
+          <label class="weight-label">
+            <span>Peso semántico</span>
+            <input type="range" id="wText" min="0" max="100" value="50" oninput="updateWeights()" disabled>
+            <span id="wTextVal" class="weight-val">50%</span>
+          </label>
+        </div>
+      </div>
+      <div id="simResults"></div>
+    </section>
+
+    <!-- STATS -->
+    <section class="page" id="page-stats">
+      <div class="page-header">
+        <h1 class="page-title">Estadísticas Sofascore</h1>
+        <p class="page-desc">Cargá y visualizá métricas de rendimiento individual por partido.</p>
+      </div>
+      <div class="stats-controls">
+        <input type="text" id="statsPlayer" placeholder="Nombre del jugador" class="filter-select" style="width:220px">
+        <input type="text" id="statsMatch" placeholder="Partido (ej: San Martín vs Belgrano)" class="filter-select" style="width:280px">
+        <span class="saved-badge" id="savedBadge">✓ Guardado</span>
+      </div>
+      <div class="stats-tabs">
+        <button class="stats-tab active" data-stab="load">Cargar</button>
+        <button class="stats-tab" data-stab="view">Ver</button>
+        <button class="stats-tab" data-stab="history">Historial</button>
+      </div>
+      <div class="stats-panel active" id="stab-load">
+        <div class="stats-form-grid">
+          <div class="stats-section">
+            <div class="stats-section-title">Producción ofensiva</div>
+            <div class="stats-fields">
+              <div class="stat-field"><label>Goles</label><input type="number" id="s-goles" min="0" placeholder="0"></div>
+              <div class="stat-field"><label>Asistencias</label><input type="number" id="s-asist" min="0" placeholder="0"></div>
+              <div class="stat-field"><label>Remates al arco</label><input type="number" id="s-remates" min="0" placeholder="0"></div>
+              <div class="stat-field"><label>xG</label><input type="number" id="s-xg" min="0" step="0.01" placeholder="0.00"></div>
+              <div class="stat-field"><label>Regates completados</label><input type="number" id="s-regates" min="0" placeholder="0"></div>
+              <div class="stat-field"><label>Ocasiones creadas</label><input type="number" id="s-ocasiones" min="0" placeholder="0"></div>
+            </div>
+          </div>
+          <div class="stats-section">
+            <div class="stats-section-title">Acciones</div>
+            <div class="stats-fields">
+              <div class="stat-field"><label>Pases completados</label><input type="number" id="s-pases" min="0" placeholder="0"></div>
+              <div class="stat-field"><label>Precisión de pase %</label><input type="number" id="s-precision" min="0" max="100" placeholder="0"></div>
+              <div class="stat-field"><label>Duelos ganados %</label><input type="number" id="s-duelos" min="0" max="100" placeholder="0"></div>
+              <div class="stat-field"><label>Recuperaciones</label><input type="number" id="s-recup" min="0" placeholder="0"></div>
+              <div class="stat-field"><label>Intercepciones</label><input type="number" id="s-interc" min="0" placeholder="0"></div>
+              <div class="stat-field"><label>Despejes</label><input type="number" id="s-despejes" min="0" placeholder="0"></div>
+            </div>
+          </div>
+          <div class="stats-section">
+            <div class="stats-section-title">Rating</div>
+            <div class="stats-fields">
+              <div class="stat-field"><label>Rating Sofascore</label><input type="number" id="s-rating" min="1" max="10" step="0.1" placeholder="6.5"></div>
+              <div class="stat-field"><label>Minutos jugados</label><input type="number" id="s-minutos" min="0" max="120" placeholder="90"></div>
+            </div>
+          </div>
+        </div>
+        <div class="stats-actions">
+          <button class="btn-primary" onclick="guardarStats()">Guardar estadísticas</button>
+          <button class="btn-secondary" onclick="limpiarStats()">Limpiar</button>
+        </div>
+      </div>
+      <div class="stats-panel" id="stab-view">
+        <div id="statsView"><div class="empty-state"><div class="empty-icon">📊</div><p>Ingresá un nombre arriba y cambiá a esta pestaña para ver los promedios.</p></div></div>
+      </div>
+      <div class="stats-panel" id="stab-history">
+        <div id="statsHistory"><div class="empty-state"><div class="empty-icon">📋</div><p>No hay estadísticas guardadas todavía.</p></div></div>
+      </div>
+    </section>
+
+  </main>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
