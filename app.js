@@ -7,8 +7,9 @@ const SHEET_ID = '1qjZVOaJpJRJsti13gEOPuywp2Kmq5Fpi3qVGobBYq64';
 const SHEET_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json`;
 const STATS_KEY = 'scout_stats_v1';
 
-let allPlayers = [];
-let selectedPlayerIdx = null;
+let allRows = [];       // todas las filas del sheet (una por visoria)
+let playerGroups = [];  // jugadores agrupados (un objeto por jugador)
+let selectedPlayerName = null;
 let charts = {};
 
 // ============================================
@@ -58,10 +59,11 @@ async function loadData() {
     const json = JSON.parse(text.match(/google\.visualization\.Query\.setResponse\(([\s\S]*)\)/)[1]);
     const cols = json.table.cols.map(c => c.label);
     const rows = (json.table.rows || []).map(r => parseRow(r, cols));
-    allPlayers = rows.filter(r => {
+    allRows = rows.filter(r => {
       const jugador = getField(r, 'jugador', 'nombre');
       return jugador && jugador.toString().trim() !== '';
     });
+    playerGroups = groupByPlayer(allRows);
     setStatus('live');
     renderAll();
   } catch (e) {
@@ -89,12 +91,64 @@ function getField(p, ...keys) {
   return '';
 }
 
+// ============================================
+// GROUPING — agrupa visorias por nombre de jugador
+// ============================================
+
+function groupByPlayer(rows) {
+  const map = {};
+  rows.forEach(row => {
+    const nombre = getField(row, 'jugador', 'nombre');
+    const key = nombre.toLowerCase().trim();
+    if (!map[key]) {
+      map[key] = {
+        nombre,
+        visorias: [],
+        // campos que tomamos de la visoria más reciente
+        pos: '', rol: '', equipo: '', edad: '', nac: '',
+        nivelGeneral: null, nivelPotencial: null,
+        conNivel: false,
+      };
+    }
+    map[key].visorias.push(row);
+  });
+
+  // Para cada jugador, tomamos la visoria más reciente como fuente de datos base
+  return Object.values(map).map(pg => {
+    const ultima = pg.visorias[pg.visorias.length - 1];
+    pg.pos = getField(ultima, 'posición', 'posicion');
+    pg.rol = getField(ultima, 'rol');
+    pg.equipo = getField(ultima, 'equipo', 'club');
+    pg.edad = getField(ultima, 'edad');
+    pg.nac = getField(ultima, 'nacionalidad');
+
+    // Nivel general: promedio de todas las visorias que tengan el campo
+    const niveles = pg.visorias
+      .map(v => parseFloat(getField(v, 'habilidad general', 'nivel general')))
+      .filter(n => !isNaN(n));
+    pg.nivelGeneral = niveles.length ? +(niveles.reduce((a, b) => a + b, 0) / niveles.length).toFixed(1) : null;
+
+    const potenciales = pg.visorias
+      .map(v => parseFloat(getField(v, 'habilidad potencial', 'nivel potencial')))
+      .filter(n => !isNaN(n));
+    pg.nivelPotencial = potenciales.length ? +(potenciales.reduce((a, b) => a + b, 0) / potenciales.length).toFixed(1) : null;
+
+    // Con nivel: si al menos una visoria dice "Sí"
+    pg.conNivel = pg.visorias.some(v => {
+      const nv = getField(v, 'nivel para', 'nivel para el').toLowerCase();
+      return nv === 'sí' || nv === 'si';
+    });
+
+    return pg;
+  });
+}
+
 function setStatus(state) {
   const dot = document.getElementById('statusDot');
   const text = document.getElementById('statusText');
   dot.className = 'status-dot';
   if (state === 'loading') { text.textContent = 'Conectando...'; }
-  if (state === 'live') { dot.classList.add('live'); text.textContent = `${allPlayers.length} jugadores`; }
+  if (state === 'live') { dot.classList.add('live'); text.textContent = `${playerGroups.length} jugadores · ${allRows.length} visorias`; }
   if (state === 'error') { dot.classList.add('error'); text.textContent = 'Sin conexión'; }
 }
 
@@ -122,28 +176,23 @@ function renderAll() {
 // ============================================
 
 function renderOverview() {
-  const total = allPlayers.length;
+  const total = playerGroups.length;
+  const totalVisorias = allRows.length;
   if (total === 0) {
-    document.getElementById('metricsGrid').innerHTML = `<div class="empty-state" style="grid-column:1/-1"><div class="empty-icon">📋</div><p>No hay visorias cargadas todavía. Completá el form para ver los datos acá.</p></div>`;
+    document.getElementById('metricsGrid').innerHTML = `<div class="empty-state" style="grid-column:1/-1"><div class="empty-icon">📋</div><p>No hay visorias cargadas todavía.</p></div>`;
     return;
   }
 
-  const conNivel = allPlayers.filter(p => {
-    const v = getField(p, 'nivel para', 'nivel para el').toLowerCase();
-    return v === 'sí' || v === 'si';
-  }).length;
-
-  const niveles = allPlayers
-    .map(p => parseFloat(getField(p, 'habilidad general', 'nivel general')))
-    .filter(n => !isNaN(n));
+  const conNivel = playerGroups.filter(pg => pg.conNivel).length;
+  const niveles = playerGroups.map(pg => pg.nivelGeneral).filter(n => n !== null);
   const prom = niveles.length ? (niveles.reduce((a, b) => a + b, 0) / niveles.length).toFixed(1) : '—';
-  const posSet = new Set(allPlayers.map(p => getField(p, 'posición', 'posicion')).filter(Boolean));
+  const posSet = new Set(playerGroups.map(pg => pg.pos).filter(Boolean));
 
   document.getElementById('metricsGrid').innerHTML = `
     <div class="metric-card">
-      <div class="metric-label">Jugadores visoriados</div>
+      <div class="metric-label">Jugadores</div>
       <div class="metric-value">${total}</div>
-      <div class="metric-sub">en la base de datos</div>
+      <div class="metric-sub">${totalVisorias} visorias en total</div>
     </div>
     <div class="metric-card">
       <div class="metric-label">Nivel promedio</div>
@@ -167,10 +216,9 @@ function renderOverview() {
 }
 
 function renderOverviewCharts() {
-  // Posición chart
   const posCounts = {};
-  allPlayers.forEach(p => {
-    const pos = getField(p, 'posición', 'posicion') || 'Sin datos';
+  playerGroups.forEach(pg => {
+    const pos = pg.pos || 'Sin datos';
     posCounts[pos] = (posCounts[pos] || 0) + 1;
   });
   const posLabels = Object.keys(posCounts).sort((a, b) => posCounts[b] - posCounts[a]).slice(0, 10);
@@ -186,20 +234,18 @@ function renderOverviewCharts() {
         datasets: [{ data: posLabels.map(l => posCounts[l]), backgroundColor: colors.slice(0, posLabels.length), borderWidth: 0, hoverOffset: 4 }]
       },
       options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {
-          legend: { position: 'bottom', labels: { color: '#9898a8', font: { size: 11, family: 'DM Mono' }, padding: 8, boxWidth: 10 } }
-        }
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { position: 'bottom', labels: { color: '#9898a8', font: { size: 11, family: 'DM Mono' }, padding: 8, boxWidth: 10 } } }
       }
     });
   }
 
-  // Nivel chart
   const nivCounts = {};
-  allPlayers.forEach(p => {
-    const n = getField(p, 'habilidad general', 'nivel general');
-    if (n) nivCounts[n] = (nivCounts[n] || 0) + 1;
+  playerGroups.forEach(pg => {
+    if (pg.nivelGeneral !== null) {
+      const n = pg.nivelGeneral.toString();
+      nivCounts[n] = (nivCounts[n] || 0) + 1;
+    }
   });
   const nivLabels = Object.keys(nivCounts).sort((a, b) => parseFloat(a) - parseFloat(b));
 
@@ -210,16 +256,10 @@ function renderOverviewCharts() {
       type: 'bar',
       data: {
         labels: nivLabels,
-        datasets: [{
-          data: nivLabels.map(l => nivCounts[l]),
-          backgroundColor: '#c8f04a',
-          borderRadius: 3,
-          borderWidth: 0
-        }]
+        datasets: [{ data: nivLabels.map(l => nivCounts[l]), backgroundColor: '#c8f04a', borderRadius: 3, borderWidth: 0 }]
       },
       options: {
-        responsive: true,
-        maintainAspectRatio: false,
+        responsive: true, maintainAspectRatio: false,
         plugins: { legend: { display: false } },
         scales: {
           y: { ticks: { color: '#55555f', font: { size: 11 } }, grid: { color: '#2a2a35' } },
@@ -231,31 +271,25 @@ function renderOverviewCharts() {
 }
 
 function renderRecentList() {
-  const recientes = [...allPlayers].slice(-8).reverse();
-  document.getElementById('recentList').innerHTML = recientes.map(p => {
-    const nombre = getField(p, 'jugador', 'nombre');
-    const pos = getField(p, 'posición', 'posicion');
-    const club = getField(p, 'equipo', 'club');
-    const nv = getField(p, 'nivel para', 'nivel para el');
-    const nivel = getField(p, 'habilidad general', 'nivel general');
-    return `
-      <div class="table-row">
-        <span class="table-row-left">${nombre}${pos ? ' · ' + pos : ''}${club ? ' · ' + club : ''}</span>
-        <div style="display:flex;align-items:center;gap:8px">
-          ${nivel ? `<span style="font-family:var(--font-mono);font-size:12px;color:var(--accent)">${nivel}</span>` : ''}
-          ${badgeFromNivel(nv)}
-        </div>
-      </div>`;
-  }).join('');
+  const recientes = [...playerGroups].slice(-8).reverse();
+  document.getElementById('recentList').innerHTML = recientes.map(pg => `
+    <div class="table-row" style="cursor:pointer" onclick="selectPlayerByName('${pg.nombre.replace(/'/g,"\\'")}')">
+      <span class="table-row-left">${pg.nombre}${pg.pos ? ' · ' + pg.pos : ''}${pg.equipo ? ' · ' + pg.equipo : ''}</span>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:11px;color:var(--text-3);font-family:var(--font-mono)">${pg.visorias.length} visoria${pg.visorias.length > 1 ? 's' : ''}</span>
+        ${pg.nivelGeneral !== null ? `<span style="font-family:var(--font-mono);font-size:12px;color:var(--accent)">${pg.nivelGeneral}</span>` : ''}
+        ${pg.conNivel ? '<span class="badge badge-green">Con nivel</span>' : ''}
+      </div>
+    </div>`).join('');
 }
 
 // ============================================
-// PLAYERS
+// PLAYERS — con barra de búsqueda y filtros
 // ============================================
 
 function populateFilters() {
-  const posSet = [...new Set(allPlayers.map(p => getField(p, 'posición', 'posicion')).filter(Boolean))].sort();
-  const rolSet = [...new Set(allPlayers.map(p => getField(p, 'rol')).filter(Boolean))].sort();
+  const posSet = [...new Set(playerGroups.map(pg => pg.pos).filter(Boolean))].sort();
+  const rolSet = [...new Set(playerGroups.map(pg => pg.rol).filter(Boolean))].sort();
 
   const fPos = document.getElementById('fPos');
   const fRol = document.getElementById('fRol');
@@ -267,25 +301,28 @@ function populateFilters() {
   fPos.addEventListener('change', renderPlayers);
   fRol.addEventListener('change', renderPlayers);
   document.getElementById('fNivel').addEventListener('change', renderPlayers);
+
+  // Búsqueda por nombre
+  const searchInput = document.getElementById('searchPlayer');
+  if (searchInput) searchInput.addEventListener('input', renderPlayers);
 }
 
 function renderPlayers() {
   const fPos = document.getElementById('fPos').value;
   const fRol = document.getElementById('fRol').value;
   const fNivel = document.getElementById('fNivel').value;
+  const search = (document.getElementById('searchPlayer')?.value || '').toLowerCase().trim();
 
-  const filtered = allPlayers.filter(p => {
-    const pos = getField(p, 'posición', 'posicion');
-    const rol = getField(p, 'rol');
-    const nv = getField(p, 'nivel para', 'nivel para el').toLowerCase();
-    if (fPos && pos !== fPos) return false;
-    if (fRol && rol !== fRol) return false;
-    if (fNivel === 'si' && nv !== 'sí' && nv !== 'si') return false;
-    if (fNivel === 'no' && (nv === 'sí' || nv === 'si')) return false;
+  const filtered = playerGroups.filter(pg => {
+    if (fPos && pg.pos !== fPos) return false;
+    if (fRol && pg.rol !== fRol) return false;
+    if (fNivel === 'si' && !pg.conNivel) return false;
+    if (fNivel === 'no' && pg.conNivel) return false;
+    if (search && !pg.nombre.toLowerCase().includes(search)) return false;
     return true;
   });
 
-  document.getElementById('resultsCount').textContent = `${filtered.length} jugadores`;
+  document.getElementById('resultsCount').textContent = `${filtered.length} jugador${filtered.length !== 1 ? 'es' : ''}`;
 
   const grid = document.getElementById('playersGrid');
   if (filtered.length === 0) {
@@ -293,106 +330,78 @@ function renderPlayers() {
     return;
   }
 
-  grid.innerHTML = filtered.map(p => {
-    const idx = allPlayers.indexOf(p);
-    const nombre = getField(p, 'jugador', 'nombre');
-    const pos = getField(p, 'posición', 'posicion');
-    const rol = getField(p, 'rol');
-    const equipo = getField(p, 'equipo', 'club');
-    const edad = getField(p, 'edad');
-    const nv = getField(p, 'nivel para', 'nivel para el');
-    const nivel = getField(p, 'habilidad general', 'nivel general');
-    return `
-      <div class="player-card ${selectedPlayerIdx === idx ? 'selected' : ''}" onclick="selectPlayer(${idx})">
-        <div class="player-avatar">${initials(nombre)}</div>
-        <div class="player-name">${nombre || '—'}</div>
-        <div class="player-pos">${pos}${rol ? ' · ' + rol : ''}</div>
-        <div class="player-club">${equipo}${edad ? ' · ' + edad + ' años' : ''}</div>
-        ${nivel ? `<div class="player-level">${nivel}<span class="player-level-label"> / 10</span></div>` : ''}
-        <div style="margin-top:6px">${badgeFromNivel(nv)}</div>
-      </div>`;
-  }).join('');
+  grid.innerHTML = filtered.map(pg => `
+    <div class="player-card ${selectedPlayerName === pg.nombre ? 'selected' : ''}" onclick="selectPlayerByName('${pg.nombre.replace(/'/g,"\\'")}')">
+      <div class="player-avatar">${initials(pg.nombre)}</div>
+      <div class="player-name">${pg.nombre}</div>
+      <div class="player-pos">${pg.pos}${pg.rol ? ' · ' + pg.rol : ''}</div>
+      <div class="player-club">${pg.equipo}${pg.edad ? ' · ' + pg.edad + ' años' : ''}</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-top:6px">
+        ${pg.nivelGeneral !== null ? `<div class="player-level">${pg.nivelGeneral}<span class="player-level-label"> / 10</span></div>` : '<div></div>'}
+        <span style="font-size:11px;color:var(--text-3);font-family:var(--font-mono)">${pg.visorias.length} visoria${pg.visorias.length > 1 ? 's' : ''}</span>
+      </div>
+      <div style="margin-top:6px">${pg.conNivel ? '<span class="badge badge-green">Con nivel</span>' : ''}</div>
+    </div>`).join('');
 }
 
-function selectPlayer(idx) {
-  selectedPlayerIdx = idx;
+function selectPlayerByName(nombre) {
+  selectedPlayerName = nombre;
   renderPlayers();
   renderDetail();
-  document.querySelectorAll('.nav-btn').forEach(b => {
-    b.classList.toggle('active', b.dataset.page === 'detail');
-  });
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.page === 'detail'));
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.getElementById('page-detail').classList.add('active');
 }
 
 // ============================================
-// DETAIL
+// DETAIL — muestra todas las visorias del jugador
 // ============================================
 
 function renderDetail() {
-  const p = allPlayers[selectedPlayerIdx];
-  if (!p) return;
+  const pg = playerGroups.find(p => p.nombre === selectedPlayerName);
+  if (!pg) return;
 
-  const nombre = getField(p, 'jugador', 'nombre');
-  const pos = getField(p, 'posición', 'posicion');
-  const rol = getField(p, 'rol');
-  const equipo = getField(p, 'equipo', 'club');
-  const edad = getField(p, 'edad');
-  const nac = getField(p, 'nacionalidad');
-  const torneo = getField(p, 'torneo', 'nombre del torneo');
-  const esquema = getField(p, 'esquema');
-  const tiempo = getField(p, 'tiempo');
-  const valoracion = getField(p, 'valoración', 'valoracion');
-  const ngh = parseFloat(getField(p, 'habilidad general', 'nivel general')) || null;
-  const ngp = parseFloat(getField(p, 'habilidad potencial', 'nivel potencial')) || null;
-  const nv = getField(p, 'nivel para', 'nivel para el');
-  const seguir = getField(p, 'seguir', 'argumentos');
-  const scout = getField(p, 'scout');
-  const otec = getField(p, 'técnicas ofensivas', 'tecnicas ofensivas', 'técnicas (ofensivas');
-  const dtec = getField(p, 'técnicas defensivas', 'tecnicas defensivas');
-  const otac = getField(p, 'tácticas ofensivas', 'tacticas ofensivas', 'tácticas (ofensivas');
-  const dtac = getField(p, 'tácticas defensivas', 'tacticas defensivas');
-  const fis = getField(p, 'físicas', 'fisicas');
-  const men = getField(p, 'mentales', 'actitudinales');
-  const desc = getField(p, 'descripción general', 'descripcion general');
-  const extra = getField(p, 'comentario extra', 'extra');
-  const motivos = getField(p, 'motivos');
+  const ultima = pg.visorias[pg.visorias.length - 1];
+  const nv = pg.conNivel;
+  const desc = pg.visorias.map(v => getField(v, 'descripción general', 'descripcion general')).filter(Boolean).pop() || '';
 
-  const infoRows = [
-    ['Scout', scout], ['Edad', edad ? edad + ' años' : ''], ['Nacionalidad', nac],
-    ['Equipo', equipo], ['Torneo', torneo], ['Esquema', esquema],
-    ['Tiempo de juego', tiempo ? tiempo + ' min' : ''], ['Valoración partido', valoracion ? valoracion + ' / 10' : ''],
-    ['Nivel general', ngh ? ngh + ' / 10' : ''], ['Nivel potencial', ngp ? ngp + ' / 10' : ''],
-    ['Seguir observando', seguir],
-  ].filter(([, v]) => v);
-
-  const obsItems = [
-    ['Obs. técnicas ofensivas', otec], ['Obs. técnicas defensivas', dtec],
-    ['Obs. tácticas ofensivas', otac], ['Obs. tácticas defensivas', dtac],
-    ['Obs. físicas', fis], ['Obs. mentales / actitudinales', men],
-  ].filter(([, v]) => v);
+  // Valoraciones de todas las visorias
+  const valoraciones = pg.visorias
+    .map(v => parseFloat(getField(v, 'valoración', 'valoracion')))
+    .filter(n => !isNaN(n));
+  const valoracionProm = valoraciones.length ? (valoraciones.reduce((a, b) => a + b, 0) / valoraciones.length).toFixed(1) : null;
 
   document.getElementById('detailContent').innerHTML = `
     <div class="detail-header">
-      <div class="detail-avatar">${initials(nombre)}</div>
+      <div class="detail-avatar">${initials(pg.nombre)}</div>
       <div class="detail-info">
-        <div class="detail-name">${nombre || '—'}</div>
-        <div class="detail-meta">${[pos, rol, equipo].filter(Boolean).join(' · ')}</div>
+        <div class="detail-name">${pg.nombre}</div>
+        <div class="detail-meta">${[pg.pos, pg.rol, pg.equipo].filter(Boolean).join(' · ')}</div>
       </div>
-      <div>${badgeFromNivel(nv)}</div>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">
+        ${nv ? '<span class="badge badge-green">Con nivel</span>' : ''}
+        <span style="font-size:12px;color:var(--text-3);font-family:var(--font-mono)">${pg.visorias.length} visoria${pg.visorias.length > 1 ? 's' : ''}</span>
+      </div>
     </div>
 
     <div class="detail-grid">
       <div class="detail-card">
         <div class="detail-card-title">Información general</div>
-        ${infoRows.map(([l, v]) => `<div class="detail-row"><span class="detail-row-label">${l}</span><span class="detail-row-value">${v}</span></div>`).join('')}
+        ${[['Edad', pg.edad ? pg.edad + ' años' : ''], ['Nacionalidad', pg.nac], ['Equipo', pg.equipo],
+           ['Nivel general (prom.)', pg.nivelGeneral !== null ? pg.nivelGeneral + ' / 10' : ''],
+           ['Nivel potencial (prom.)', pg.nivelPotencial !== null ? pg.nivelPotencial + ' / 10' : ''],
+           ['Valoración (prom.)', valoracionProm ? valoracionProm + ' / 10' : ''],
+        ].filter(([, v]) => v).map(([l, v]) => `
+          <div class="detail-row">
+            <span class="detail-row-label">${l}</span>
+            <span class="detail-row-value">${v}</span>
+          </div>`).join('')}
       </div>
       <div class="detail-card">
         <div class="detail-card-title">Métricas de rendimiento</div>
-        ${ngh !== null ? barHTML('Nivel general', ngh, 10, '#c8f04a') : ''}
-        ${ngp !== null ? barHTML('Nivel potencial', ngp, 10, '#4af0c8') : ''}
-        ${valoracion ? barHTML('Valoración partido', parseFloat(valoracion), 10, '#4a90f0') : ''}
-        ${!ngh && !ngp && !valoracion ? '<div style="color:var(--text-3);font-size:13px">Sin métricas numéricas disponibles.</div>' : ''}
+        ${pg.nivelGeneral !== null ? barHTML('Nivel general', pg.nivelGeneral, 10, '#c8f04a') : ''}
+        ${pg.nivelPotencial !== null ? barHTML('Nivel potencial', pg.nivelPotencial, 10, '#4af0c8') : ''}
+        ${valoracionProm ? barHTML('Valoración promedio', parseFloat(valoracionProm), 10, '#4a90f0') : ''}
       </div>
     </div>
 
@@ -402,22 +411,47 @@ function renderDetail() {
       <div class="obs-item-text">${desc}</div>
     </div>` : ''}
 
-    ${obsItems.length ? `
     <div class="obs-block">
-      <div class="obs-title">Observaciones</div>
-      ${obsItems.map(([l, v]) => `
-        <div class="obs-item">
-          <div class="obs-item-label">${l}</div>
-          <div class="obs-item-text">${v}</div>
-        </div>`).join('')}
-    </div>` : ''}
-
-    ${extra || motivos ? `
-    <div class="obs-block" style="margin-top:12px">
-      <div class="obs-title">Notas adicionales</div>
-      ${extra ? `<div class="obs-item"><div class="obs-item-label">Comentario extra</div><div class="obs-item-text">${extra}</div></div>` : ''}
-      ${motivos ? `<div class="obs-item"><div class="obs-item-label">Motivos</div><div class="obs-item-text">${motivos}</div></div>` : ''}
-    </div>` : ''}
+      <div class="obs-title">Historial de visorias</div>
+      ${pg.visorias.map((v, i) => {
+        const torneo = getField(v, 'torneo', 'nombre del torneo');
+        const partido = getField(v, 'partido');
+        const fecha = getField(v, 'fecha');
+        const nivel = getField(v, 'habilidad general', 'nivel general');
+        const valoracion = getField(v, 'valoración', 'valoracion');
+        const otec = getField(v, 'técnicas ofensivas', 'tecnicas ofensivas', 'técnicas (ofensivas');
+        const dtec = getField(v, 'técnicas defensivas', 'tecnicas defensivas');
+        const otac = getField(v, 'tácticas ofensivas', 'tacticas ofensivas', 'tácticas (ofensivas');
+        const dtac = getField(v, 'tácticas defensivas', 'tacticas defensivas');
+        const fis = getField(v, 'físicas', 'fisicas');
+        const men = getField(v, 'mentales', 'actitudinales');
+        const extra = getField(v, 'comentario extra', 'extra');
+        const obsItems = [
+          ['Obs. técnicas ofensivas', otec], ['Obs. técnicas defensivas', dtec],
+          ['Obs. tácticas ofensivas', otac], ['Obs. tácticas defensivas', dtac],
+          ['Obs. físicas', fis], ['Obs. mentales / actitudinales', men],
+        ].filter(([, v]) => v);
+        return `
+          <div class="obs-item">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+              <div>
+                <div class="obs-item-label">Visoria ${pg.visorias.length - i}${fecha ? ' · ' + fecha : ''}${torneo ? ' · ' + torneo : ''}</div>
+                ${partido ? `<div style="font-size:12px;color:var(--text-3)">${partido}</div>` : ''}
+              </div>
+              <div style="display:flex;gap:8px;align-items:center">
+                ${nivel ? `<span style="font-family:var(--font-mono);font-size:13px;color:var(--accent)">${nivel}/10</span>` : ''}
+                ${valoracion ? `<span style="font-size:12px;color:var(--text-3)">Val: ${valoracion}</span>` : ''}
+              </div>
+            </div>
+            ${obsItems.map(([l, v]) => `
+              <div style="margin-bottom:6px">
+                <div style="font-size:11px;color:var(--accent);font-family:var(--font-mono);margin-bottom:2px">${l}</div>
+                <div style="font-size:13px;color:var(--text-2);line-height:1.6">${v}</div>
+              </div>`).join('')}
+            ${extra ? `<div style="font-size:12px;color:var(--text-3);margin-top:4px;font-style:italic">${extra}</div>` : ''}
+          </div>`;
+      }).join('')}
+    </div>
   `;
 }
 
@@ -428,10 +462,8 @@ function renderDetail() {
 function populateSimSelect() {
   const sel = document.getElementById('simSelect');
   sel.innerHTML = '<option value="">— Elegí un jugador de referencia —</option>';
-  allPlayers.forEach((p, i) => {
-    const nombre = getField(p, 'jugador', 'nombre');
-    const pos = getField(p, 'posición', 'posicion');
-    sel.innerHTML += `<option value="${i}">${nombre} — ${pos}</option>`;
+  playerGroups.forEach((pg, i) => {
+    sel.innerHTML += `<option value="${i}">${pg.nombre} — ${pg.pos}</option>`;
   });
   sel.addEventListener('change', renderSimilarity);
 }
@@ -446,28 +478,21 @@ function updateWeights() {
 function simScore(a, b, wStats) {
   const wText = 1 - wStats;
 
-  const ngh_a = parseFloat(getField(a, 'habilidad general', 'nivel general')) || 0;
-  const ngh_b = parseFloat(getField(b, 'habilidad general', 'nivel general')) || 0;
-  const ngp_a = parseFloat(getField(a, 'habilidad potencial', 'nivel potencial')) || 0;
-  const ngp_b = parseFloat(getField(b, 'habilidad potencial', 'nivel potencial')) || 0;
-  const val_a = parseFloat(getField(a, 'valoración', 'valoracion')) || 0;
-  const val_b = parseFloat(getField(b, 'valoración', 'valoracion')) || 0;
-
   const numScore = 1 - Math.sqrt(
-    Math.pow((ngh_a - ngh_b) / 10, 2) +
-    Math.pow((ngp_a - ngp_b) / 10, 2) +
-    Math.pow((val_a - val_b) / 10, 2)
-  ) / Math.sqrt(3);
+    Math.pow(((a.nivelGeneral || 0) - (b.nivelGeneral || 0)) / 10, 2) +
+    Math.pow(((a.nivelPotencial || 0) - (b.nivelPotencial || 0)) / 10, 2)
+  ) / Math.sqrt(2);
 
-  const desc_a = getField(a, 'descripción general', 'descripcion general').toLowerCase();
-  const desc_b = getField(b, 'descripción general', 'descripcion general').toLowerCase();
-  const words_a = new Set(desc_a.split(/\s+/).filter(w => w.length > 3));
-  const words_b = new Set(desc_b.split(/\s+/).filter(w => w.length > 3));
-  const intersection = [...words_a].filter(w => words_b.has(w)).length;
-  const union = new Set([...words_a, ...words_b]).size;
+  // Similitud semántica por palabras clave en descripciones
+  const descA = a.visorias.map(v => getField(v, 'descripción general', 'descripcion general')).join(' ').toLowerCase();
+  const descB = b.visorias.map(v => getField(v, 'descripción general', 'descripcion general')).join(' ').toLowerCase();
+  const wordsA = new Set(descA.split(/\s+/).filter(w => w.length > 3));
+  const wordsB = new Set(descB.split(/\s+/).filter(w => w.length > 3));
+  const intersection = [...wordsA].filter(w => wordsB.has(w)).length;
+  const union = new Set([...wordsA, ...wordsB]).size;
   const textScore = union > 0 ? intersection / union : 0;
 
-  const posBonus = getField(a, 'posición', 'posicion') === getField(b, 'posición', 'posicion') ? 0.05 : 0;
+  const posBonus = a.pos === b.pos ? 0.05 : 0;
 
   return Math.min(1, numScore * wStats + textScore * wText + posBonus);
 }
@@ -476,41 +501,31 @@ function renderSimilarity() {
   const idx = parseInt(document.getElementById('simSelect').value);
   const wStats = parseInt(document.getElementById('wStats').value) / 100;
   const res = document.getElementById('simResults');
-
   if (isNaN(idx)) { res.innerHTML = ''; return; }
 
-  const ref = allPlayers[idx];
-  const scored = allPlayers
-    .map((p, i) => ({ p, i, s: simScore(ref, p, wStats) }))
+  const ref = playerGroups[idx];
+  const scored = playerGroups
+    .map((pg, i) => ({ pg, i, s: simScore(ref, pg, wStats) }))
     .filter(x => x.i !== idx)
     .sort((a, b) => b.s - a.s)
     .slice(0, 6);
 
-  const nombre = getField(ref, 'jugador', 'nombre');
-
   res.innerHTML = `
     <div class="detail-card">
-      <div class="detail-card-title">Más similares a ${nombre}</div>
+      <div class="detail-card-title">Más similares a ${ref.nombre}</div>
       <div class="sim-list">
-        ${scored.map(({ p, i, s }) => {
-          const n = getField(p, 'jugador', 'nombre');
-          const pos = getField(p, 'posición', 'posicion');
-          const eq = getField(p, 'equipo', 'club');
-          const nv = getField(p, 'habilidad general', 'nivel general');
-          const pct = Math.round(s * 100);
-          return `
-            <div class="sim-item" onclick="selectPlayer(${i})">
-              <div class="sim-avatar">${initials(n)}</div>
-              <div>
-                <div class="sim-name">${n}</div>
-                <div class="sim-meta">${[pos, eq].filter(Boolean).join(' · ')}${nv ? ' · Nivel ' + nv : ''}</div>
-              </div>
-              <div style="text-align:right">
-                <div class="sim-score">${pct}%</div>
-                <div class="sim-score-label">similitud</div>
-              </div>
-            </div>`;
-        }).join('')}
+        ${scored.map(({ pg, i, s }) => `
+          <div class="sim-item" onclick="selectPlayerByName('${pg.nombre.replace(/'/g,"\\'")}')">
+            <div class="sim-avatar">${initials(pg.nombre)}</div>
+            <div>
+              <div class="sim-name">${pg.nombre}</div>
+              <div class="sim-meta">${[pg.pos, pg.equipo].filter(Boolean).join(' · ')}${pg.nivelGeneral ? ' · Nivel ' + pg.nivelGeneral : ''}</div>
+            </div>
+            <div style="text-align:right">
+              <div class="sim-score">${Math.round(s * 100)}%</div>
+              <div class="sim-score-label">similitud</div>
+            </div>
+          </div>`).join('')}
       </div>
     </div>`;
 }
@@ -536,32 +551,20 @@ function guardarStats() {
   const nombre = document.getElementById('statsPlayer').value.trim();
   const partido = document.getElementById('statsMatch').value.trim();
   if (!nombre) { alert('Ingresá el nombre del jugador.'); return; }
-
   const entry = {
-    id: Date.now(),
-    jugador: nombre,
-    partido: partido || '—',
+    id: Date.now(), jugador: nombre, partido: partido || '—',
     fecha: new Date().toLocaleDateString('es-AR'),
-    goles: getStatVal('s-goles'),
-    asistencias: getStatVal('s-asist'),
-    remates: getStatVal('s-remates'),
-    xg: getStatVal('s-xg'),
-    regates: getStatVal('s-regates'),
-    ocasiones: getStatVal('s-ocasiones'),
-    pases: getStatVal('s-pases'),
-    precision: getStatVal('s-precision'),
-    duelos: getStatVal('s-duelos'),
-    recuperaciones: getStatVal('s-recup'),
-    intercepciones: getStatVal('s-interc'),
-    despejes: getStatVal('s-despejes'),
-    rating: getStatVal('s-rating'),
-    minutos: getStatVal('s-minutos'),
+    goles: getStatVal('s-goles'), asistencias: getStatVal('s-asist'),
+    remates: getStatVal('s-remates'), xg: getStatVal('s-xg'),
+    regates: getStatVal('s-regates'), ocasiones: getStatVal('s-ocasiones'),
+    pases: getStatVal('s-pases'), precision: getStatVal('s-precision'),
+    duelos: getStatVal('s-duelos'), recuperaciones: getStatVal('s-recup'),
+    intercepciones: getStatVal('s-interc'), despejes: getStatVal('s-despejes'),
+    rating: getStatVal('s-rating'), minutos: getStatVal('s-minutos'),
   };
-
   const all = getStatsStorage();
   all.push(entry);
   saveStatsStorage(all);
-
   const badge = document.getElementById('savedBadge');
   badge.style.display = 'inline-block';
   setTimeout(() => badge.style.display = 'none', 2500);
@@ -578,19 +581,15 @@ function renderStatsView() {
   const all = getStatsStorage();
   const registros = nombre ? all.filter(e => e.jugador.toLowerCase() === nombre.toLowerCase()) : all;
   const cont = document.getElementById('statsView');
-
   if (registros.length === 0) {
-    cont.innerHTML = `<div class="empty-state"><div class="empty-icon">📊</div><p>${nombre ? `No hay estadísticas guardadas para "${nombre}".` : 'Ingresá un nombre de jugador arriba.'}</p></div>`;
+    cont.innerHTML = `<div class="empty-state"><div class="empty-icon">📊</div><p>${nombre ? `No hay estadísticas para "${nombre}".` : 'Ingresá un nombre arriba.'}</p></div>`;
     return;
   }
-
   const avg = key => {
     const vals = registros.map(r => r[key]).filter(v => v !== null && v !== undefined);
     return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
   };
-
   const fmt = (v, dec = 1) => v !== null && v !== undefined ? parseFloat(v.toFixed(dec)) : '—';
-
   cont.innerHTML = `
     <div class="stats-metrics">
       <div class="stats-metric"><div class="stats-metric-label">Rating</div><div class="stats-metric-value">${fmt(avg('rating'))}</div></div>
@@ -614,8 +613,7 @@ function renderStatsView() {
         ${barHTML('Ocasiones creadas', avg('ocasiones'), 8, '#4a90f0')}
         ${barHTML('Pases completados', avg('pases'), 80, '#f0c84a')}
       </div>
-    </div>
-  `;
+    </div>`;
 }
 
 function renderStatsHistory() {
@@ -644,8 +642,7 @@ function renderStatsHistory() {
         ${e.minutos !== null ? `<span>Min: <strong>${e.minutos}</strong></span>` : ''}
       </div>
       <button class="history-delete" onclick="eliminarStat(${e.id})">Eliminar registro</button>
-    </div>
-  `).join('');
+    </div>`).join('');
 }
 
 function eliminarStat(id) {
@@ -663,17 +660,10 @@ function initials(name) {
   return parts.length >= 2 ? (parts[0][0] + parts[1][0]).toUpperCase() : name.slice(0, 2).toUpperCase();
 }
 
-function badgeFromNivel(val) {
-  if (!val) return '';
-  const v = val.toString().toLowerCase();
-  if (v === 'sí' || v === 'si') return '<span class="badge badge-green">Con nivel</span>';
-  return '<span class="badge badge-amber">Sin nivel</span>';
-}
-
 function barHTML(label, val, max, color, unit = '') {
   if (val === null || val === undefined) return '';
   const pct = Math.min(100, (val / max) * 100).toFixed(1);
-  const display = typeof val === 'number' ? parseFloat(val.toFixed(1)) + unit : val + unit;
+  const display = parseFloat(val.toFixed(1)) + unit;
   return `
     <div class="bar-group">
       <div class="bar-header"><span>${label}</span><span>${display}</span></div>
